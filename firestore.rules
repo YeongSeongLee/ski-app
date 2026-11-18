@@ -1,0 +1,99 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function owns(uid) { return signedIn() && request.auth.uid == uid; }
+    function countIsValid(items, key) {
+      return !(key in items) || (items[key] is int && items[key] >= 0 && items[key] <= 20);
+    }
+    function validPhone(phone) {
+      return phone is string && phone.size() >= 7 && phone.size() <= 25
+        && phone.matches('^[+0-9 ()-]+$');
+    }
+    match /users/{uid} {
+      allow read: if owns(uid);
+      allow create: if owns(uid)
+        && request.resource.data.keys().hasOnly(['uid','name','email','phone','points','createdAt'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.points == 0
+        && (!('phone' in request.resource.data) || validPhone(request.resource.data.phone));
+      allow update: if owns(uid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['phone'])
+        && validPhone(request.resource.data.phone);
+      allow delete: if false;
+
+      // The ski demo stores each member’s browser-independent rental snapshot here.
+      match /demo/state {
+        allow get: if owns(uid);
+        allow create, update: if owns(uid)
+          && request.resource.data.keys().hasOnly(['snapshot'])
+          && request.resource.data.snapshot is string
+          && request.resource.data.snapshot.size() <= 900000;
+      }
+    }
+    function validEquipment(items, equipment) {
+      return equipment is map
+        && equipment.keys().hasOnly(['스키','부츠','헬멧','스키복','폴대','고글'])
+        && equipment.get('스키', 0) == items.get('ski', 0)
+        && equipment.get('부츠', 0) == items.get('boots', 0)
+        && equipment.get('헬멧', 0) == items.get('helmet', 0)
+        && equipment.get('스키복', 0) == items.get('jacket', 0)
+        && equipment.get('폴대', 0) == items.get('poles', 0)
+        && equipment.get('고글', 0) == items.get('goggles', 0);
+    }
+    function nonNegativeInt(value) { return value is int && value >= 0; }
+    function validCheckout(checkout) {
+      return checkout is map
+        && checkout.keys().hasOnly(['returnedAt','recordedAt','durationMinutes','equipmentWon','timeWon','discountWon','totalWon','pointsEarned','pointsUsed','paymentMethod','paymentStatus'])
+        && checkout.returnedAt is timestamp
+        && checkout.recordedAt is timestamp
+        && checkout.returnedAt >= resource.data.rentedAt
+        && checkout.recordedAt >= checkout.returnedAt
+        && nonNegativeInt(checkout.durationMinutes)
+        && nonNegativeInt(checkout.equipmentWon)
+        && nonNegativeInt(checkout.timeWon)
+        && nonNegativeInt(checkout.discountWon)
+        && nonNegativeInt(checkout.totalWon)
+        && nonNegativeInt(checkout.pointsUsed)
+        && checkout.pointsUsed % 10 == 0
+        && checkout.pointsEarned is int
+        && checkout.pointsEarned == 10
+        && checkout.discountWon == checkout.pointsUsed * 100
+        && checkout.totalWon == checkout.equipmentWon + checkout.timeWon - checkout.discountWon
+        && checkout.paymentMethod in ['bank','card']
+        && checkout.paymentStatus == 'simulated';
+    }
+    match /rentals/{rentalId} {
+      allow read: if signedIn() && resource.data.uid == request.auth.uid;
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['uid','items','status','rentedAt','returnedAt','returnedItems','pointsEarned','pointsUsed','totalWon','equipment','rentalStatus'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status == 'rented'
+        && request.resource.data.items is map
+        && request.resource.data.items.keys().hasOnly(['ski','snowboard','boots','poles','helmet','goggles','gloves','jacket','protector'])
+        && request.resource.data.items.size() > 0
+        && (!('equipment' in request.resource.data) || validEquipment(request.resource.data.items, request.resource.data.equipment))
+        && (!('rentalStatus' in request.resource.data) || request.resource.data.rentalStatus == '대여 중')
+        && countIsValid(request.resource.data.items, 'ski')
+        && countIsValid(request.resource.data.items, 'snowboard')
+        && countIsValid(request.resource.data.items, 'boots')
+        && countIsValid(request.resource.data.items, 'poles')
+        && countIsValid(request.resource.data.items, 'helmet')
+        && countIsValid(request.resource.data.items, 'goggles')
+        && countIsValid(request.resource.data.items, 'gloves')
+        && countIsValid(request.resource.data.items, 'jacket')
+        && countIsValid(request.resource.data.items, 'protector')
+        && request.resource.data.pointsEarned == 0
+        && request.resource.data.pointsUsed == 0
+        && request.resource.data.returnedAt == null;
+      // Client-reported checkout is separate from server-managed rental and balance fields.
+      allow update: if owns(resource.data.uid)
+        && resource.data.status == 'rented'
+        && !('checkout' in resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['checkout','rentalStatus'])
+        && request.resource.data.rentalStatus == '반납 접수'
+        && validCheckout(request.resource.data.checkout);
+      allow delete: if false;
+    }
+  }
+}

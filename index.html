@@ -1,0 +1,216 @@
+<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="referrer" content="strict-origin-when-cross-origin"><meta name="viewport" content="width=device-width,initial-scale=1"><title>설원 스키 대여소</title><style>
+*{box-sizing:border-box}body{margin:0;background:#edf4f8;color:#102939;font:17px system-ui,sans-serif}header{padding:20px max(5vw,20px);background:#102939;color:white;display:flex;justify-content:space-between;gap:12px}header span{color:#adeade}main{max-width:1000px;margin:34px auto;padding:0 16px}section{background:white;border-radius:24px;padding:clamp(20px,4vw,42px);box-shadow:0 12px 40px #1232}h1{font-size:clamp(30px,5vw,52px);letter-spacing:-.06em;margin:0 0 18px}p{line-height:1.65}button,input{font:inherit;border-radius:12px}button{min-height:50px;border:0;padding:12px 18px;background:#006858;color:white;font-weight:700;cursor:pointer}button:disabled{opacity:.45;cursor:default}.secondary{background:#e7f1f2;color:#153b43}input{border:1px solid #a6b9bf;padding:12px;width:100%;margin:6px 0 14px;color:inherit}label{display:block;font-weight:650}.row,.links{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.wide{width:100%}.login{display:grid;grid-template-columns:1fr 1fr;gap:28px}.hero{min-height:310px;border-radius:18px;background:linear-gradient(145deg,#17374e,#5595ab 65%,#e8f7fb);background-image:linear-gradient(0deg,#0b243bba,transparent),url(./snow.jpg);background-position:center;background-size:cover;color:white;padding:26px;display:flex;align-items:end;font-size:30px;font-weight:800}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:16px 0}.card{padding:12px;background:#edf4f8;border-radius:14px}.photo{background:#e4edf1 url(./gear.png) no-repeat;background-size:300% 200%;aspect-ratio:1;display:grid;place-items:center;font-size:48px;border-radius:10px}.photo.small{width:58px;font-size:22px;flex:none}.card h2{font-size:19px;margin:10px 0}.count{display:flex;align-items:center;justify-content:space-between;gap:6px}.count button{min-width:48px;padding:8px}.line{display:flex;justify-content:space-between;gap:12px;align-items:center;border-bottom:1px solid #dbe7eb;padding:9px 0}.notice{background:#e5f6f1;padding:14px;border-radius:12px}.preview{display:block;max-width:100%;max-height:260px;margin:12px auto}.back{margin-bottom:14px}.actions button{min-height:86px;flex:1;font-size:23px}.error{color:#9c321f}a{color:#006858}@media(max-width:650px){.login{grid-template-columns:1fr}.hero{min-height:160px}}
+</style><header><b>❄ 설원 스키 대여소</b><span>수업용 데모</span></header><main id="app"></main><script>
+'use strict';
+const firebaseConfig = {
+  apiKey: "AIzaSyBAaeYhEvNwXt67lPHfmV2r5ZLfFLAJJVU",
+  authDomain: "ski-device.firebaseapp.com",
+  projectId: "ski-device",
+  storageBucket: "ski-device.firebasestorage.app",
+  messagingSenderId: "205940881604",
+  appId: "1:205940881604:web:29c33ac3fafbe6e9bff191",
+  measurementId: "G-DX3BJV0VRG"
+};
+const signupErrors = {
+  EMAIL_EXISTS: '이미 가입된 이메일입니다.',
+  INVALID_EMAIL: '이메일 주소를 확인해 주세요.',
+  WEAK_PASSWORD: '비밀번호를 6자 이상 입력해 주세요.',
+  PASSWORD_DOES_NOT_MEET_REQUIREMENTS: 'Firebase 프로젝트의 비밀번호 조건을 확인해 주세요.',
+  CONFIGURATION_NOT_FOUND: 'Firebase 콘솔에서 Authentication의 시작하기를 누른 뒤 이메일/비밀번호를 활성화해 주세요.',
+  API_KEY_INVALID: 'Firebase 웹 앱의 API 키 설정을 확인해 주세요.',
+  API_KEY_SERVICE_BLOCKED: 'Google Cloud에서 이 API 키에 Identity Toolkit API 사용을 허용해 주세요.',
+  API_KEY_HTTP_REFERRER_BLOCKED: 'API 키의 웹사이트 제한에 앱 주소를 등록해 주세요. 파일로 연 경우 허용된 웹 주소에서 열어야 합니다.',
+  OPERATION_NOT_ALLOWED: 'Firebase 콘솔에서 이메일/비밀번호 로그인을 활성화해 주세요.',
+  TOO_MANY_ATTEMPTS_TRY_LATER: '요청이 많습니다. 잠시 후 다시 시도해 주세요.'
+};
+
+let member = null;
+let snapshotVersion = null;
+const emptyState = () => ({points:0,active:null,history:[]});
+
+async function jsonRequest(url, options = {}, missingAllowed = false) {
+  const response = await fetch(url, {...options, signal:AbortSignal.timeout(15000)});
+  if (missingAllowed && response.status === 404) return null;
+  const data = await response.json();
+  if (!response.ok) {
+    const reason = data.error?.details?.find(item => item.reason)?.reason
+      || data.error?.message?.match(/^[A-Z][A-Z_0-9]+\b/)?.[0]
+      || data.error?.status || 'HTTP_' + response.status;
+    throw new Error(reason);
+  }
+  return data;
+}
+
+async function memberToken() {
+  if (Date.now() < member.expires) return member.idToken;
+  const data = await jsonRequest('https://securetoken.googleapis.com/v1/token?key=' + firebaseConfig.apiKey, {
+    method:'POST',
+    body:new URLSearchParams({grant_type:'refresh_token',refresh_token:member.refreshToken})
+  });
+  member.idToken = data.id_token;
+  member.refreshToken = data.refresh_token;
+  member.expires = Date.now() + (Number(data.expires_in) - 60) * 1000;
+  return member.idToken;
+}
+
+async function firestore(suffix = '', fields, condition = '') {
+  const root = 'https://firestore.googleapis.com/v1/projects/' + firebaseConfig.projectId + '/databases/(default)/documents/users/';
+  const headers = {Authorization:'Bearer ' + await memberToken()};
+  const url = root + encodeURIComponent(member.localId) + suffix + condition;
+  if (!fields) return jsonRequest(url, {headers}, true);
+  headers['Content-Type'] = 'application/json';
+  return jsonRequest(url, {method:'PATCH',headers,body:JSON.stringify({fields})});
+}
+
+async function openMember(form) {
+  const signup = form.id === 'signup';
+  const message = form.querySelector('[role=alert]');
+  const {email,password,confirm} = form.elements;
+  const name = signup ? form.elements.name.value.trim() : '';
+  const phone = signup ? form.elements.phone.value.trim() : '';
+  if (signup && password.value !== confirm.value) {
+    message.textContent = '비밀번호가 일치하지 않습니다.';
+    return;
+  }
+  if (signup && (!name || !/^[+0-9 ()-]{7,25}$/.test(phone))) {
+    message.textContent = '이름과 전화번호를 확인해 주세요.';
+    return;
+  }
+  const button = form.querySelector('button');
+  busy = true;
+  button.disabled = true;
+  message.textContent = '처리 중…';
+  try {
+    const action = signup ? 'signUp' : 'signInWithPassword';
+    const data = await jsonRequest('https://identitytoolkit.googleapis.com/v1/accounts:' + action + '?key=' + firebaseConfig.apiKey, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({email:email.value.trim(),password:password.value,returnSecureToken:true})
+    });
+    member = {...data,expires:Date.now() + (Number(data.expiresIn) - 60) * 1000};
+    let profile = await firestore();
+    if (!profile) {
+      const fields = {
+        uid:{stringValue:member.localId},
+        email:{stringValue:member.email},
+        name:{stringValue:name},
+        points:{integerValue:'0'},
+        createdAt:{timestampValue:new Date().toISOString()}
+      };
+      if (phone) fields.phone = {stringValue:phone};
+      profile = await firestore('',fields,'?currentDocument.exists=false');
+    }
+    const snapshot = await firestore('/demo/state');
+    const loaded = snapshot ? JSON.parse(snapshot.fields.snapshot.stringValue) : emptyState();
+    member.profile = profile.fields;
+    snapshotVersion = snapshot?.updateTime || null;
+    state = loaded;
+    home();
+  } catch (error) {
+    const authenticated = Boolean(member);
+    member = null;
+    const reason = error.message;
+    message.textContent = authenticated
+      ? 'Firestore에서 회원 정보 또는 기록을 불러오지 못했습니다. (' + reason + ') ' + (signup ? '계정은 생성되었습니다. 회원 로그인으로 다시 시도하세요.' : '연결과 보안 규칙을 확인한 뒤 다시 시도하세요.')
+      : (Object.hasOwn(signupErrors,reason) ? signupErrors[reason] : '회원 인증에 실패했습니다. 이메일, 비밀번호와 연결을 확인해 주세요.') + ' (' + reason + ')';
+  } finally {
+    busy = false;
+    button.disabled = false;
+  }
+}
+
+async function saveMember(next) {
+  const condition = snapshotVersion
+    ? '?currentDocument.updateTime=' + encodeURIComponent(snapshotVersion)
+    : '?currentDocument.exists=false';
+  const response = await firestore('/demo/state',{snapshot:{stringValue:JSON.stringify(next)}},condition);
+  snapshotVersion = response.updateTime;
+}
+
+function profile() {
+  if (!member) return;
+  view(back('home') + '<h1>내 회원 정보</h1><p id="profileIdentity"></p><form id="profile"><label>전화번호<input name="phone" type="tel" minlength="7" maxlength="25" required></label><p role="status"></p><button class="wide">전화번호 저장</button></form>');
+  const data = member.profile;
+  document.querySelector('#profileIdentity').textContent = [data.name?.stringValue, data.email?.stringValue].filter(Boolean).join(' · ');
+  document.querySelector('#profile input').value = data.phone?.stringValue || '';
+}
+
+async function updatePhone(form) {
+  const phone = form.elements.phone.value.trim();
+  const message = form.querySelector('[role=status]');
+  if (!/^[+0-9 ()-]{7,25}$/.test(phone)) {
+    message.textContent = '전화번호를 확인해 주세요.';
+    return;
+  }
+  busy = true;
+  const button = form.querySelector('button');
+  button.disabled = true;
+  try {
+    const updated = await firestore('',{phone:{stringValue:phone}},'?updateMask.fieldPaths=phone&currentDocument.exists=true');
+    member.profile = updated.fields;
+    message.textContent = '전화번호를 저장했습니다.';
+  } catch (error) {
+    message.textContent = '전화번호를 저장하지 못했습니다. (' + error.message + ')';
+  } finally {
+    busy = false;
+    button.disabled = false;
+  }
+}
+
+function exitMember() {
+  member = null;
+  snapshotVersion = null;
+  state = emptyState();
+  try { state = JSON.parse(localStorage.getItem(key)) || state; } catch {}
+  cleanPhoto();
+  login();
+}
+const app=document.querySelector('#app');
+const gear=['스키','부츠','헬멧','스키복','폴대','고글'];
+const icons=['🎿','🥾','⛑️','🧥','🥢','🥽'];
+const key='snow-rental-demo-v1';
+let state={points:0,active:null,history:[]};
+try{state=JSON.parse(localStorage.getItem(key))||state}catch{}
+let counts=[],photoUrl='',result='',method='',used=0,busy=false,hasGear=false;
+const probe=new Image();probe.onload=()=>{hasGear=true;document.querySelectorAll('.photo').forEach(el=>el.textContent='')};probe.src='./gear.png';
+const won=n=>n.toLocaleString('ko-KR')+'원';
+const when=n=>new Date(n).toLocaleString('ko-KR');
+const photo=(i,small=false)=>'<span role="img" aria-label="'+gear[i]+'" class="photo '+(small?'small':'')+'" style="background-position:'+(i%3)*50+'% '+Math.floor(i/3)*100+'%">'+(hasGear?'':icons[i])+'</span>';
+async function save(next) {
+  if (busy) return false;
+  busy = true;
+  try {
+    if (member) await saveMember(next);
+    else localStorage.setItem(key,JSON.stringify(next));
+    state = next;
+    return true;
+  } catch (error) {
+    alert(member ? 'Firestore에 기록을 저장하지 못했습니다. 연결을 확인하고 다시 시도해 주세요. 다른 창에서 기록을 변경했다면 다시 로그인해 주세요. (' + error.message + ')' : '브라우저 저장소에 기록을 저장하지 못했습니다.');
+    return false;
+  } finally {
+    busy = false;
+  }
+}
+function view(content){app.innerHTML='<section>'+content+'</section>';window.scrollTo(0,0)}
+const back=(page,label='뒤로')=>'<button class="secondary back" data-go="'+page+'">'+label+'</button>';
+const field=(label,name,type='text',extra='')=>'<label>'+label+'<input name="'+name+'" type="'+type+'" required '+extra+'></label>';
+function login(){view('<div class="login"><div class="hero">설원으로 출발할 준비</div><div><h1>스키 장비 대여</h1><form id="login">'+field('이메일','email','email','autocomplete="username"')+field('비밀번호','password','password','autocomplete="current-password"')+'<p class="error" role="alert"></p><button class="wide">회원 로그인</button></form><p><button class="secondary wide" data-go="home">오프라인 데모 시작</button></p><div class="links"><button class="secondary" data-go="findId">아이디 찾기</button><button class="secondary" data-go="findPw">비번 찾기</button><button class="secondary" data-go="signup">회원가입</button></div></div></div>')}
+function signup(){view(back('login')+'<h1>회원가입</h1><p>이메일과 비밀번호로 계정을 만들고 이름과 전화번호를 회원 정보에 저장합니다.</p><form id="signup">'+field('이메일','email','email')+field('이름','name')+field('비밀번호','password','password','minlength="6" autocomplete="new-password"')+field('비밀번호 확인','confirm','password')+field('전화번호','phone','tel')+'<p class="error" id="signupError" role="alert"></p><button class="wide">회원가입</button></form>')}
+function find(title){view(back('login','로그인으로')+'<h1>'+title+'</h1><p>회원 로그인에는 가입 이메일을 사용합니다. 오프라인 데모는 시작 화면에서 선택할 수 있습니다.</p>')}
+function cleanPhoto(){if(photoUrl)URL.revokeObjectURL(photoUrl);photoUrl='';result=''}
+function home(){cleanPhoto();view('<h1>장비 대여·반납</h1>'+(member?'<div class="row"><button class="secondary" data-go="profile">내 회원 정보</button><button class="secondary" data-go="exitMember">로그아웃</button></div>':'')+'<p>누적 포인트 <b>'+state.points+'점</b></p>'+(state.active?'<p class="notice">대여 시작 '+when(state.active.start)+'</p>':'')+'<div class="row actions"><button data-go="rent">장비 대여</button><button class="secondary" data-go="returning">장비 반납</button></div>'+(state.history.length?'<h2>최근 이용 기록</h2>'+state.history.slice(-5).reverse().map(x=>'<div class="line"><span>'+when(x.end)+' · '+x.items.map((q,i)=>q?gear[i]+' '+q+'개':'').filter(Boolean).join(', ')+'</span><b>'+won(x.paid)+'</b></div>').join(''):'') )}
+function rent(){if(state.active){view(back('home')+'<h1>이용 중인 장비가 있어요</h1><button data-go="returning">장비 반납</button>');return}counts=gear.map(()=>0);view(back('home')+'<h1>장비 대여</h1><p>장비별 수량을 선택하세요. 장비 1개당 10,000원입니다.</p><div class="grid">'+gear.map((name,i)=>'<article class="card">'+photo(i)+'<h2>'+name+'</h2><div class="count"><button class="secondary" data-step="-1" data-i="'+i+'" aria-label="'+name+' 수량 줄이기">−</button><b id="q'+i+'">0</b><button data-step="1" data-i="'+i+'" aria-label="'+name+' 수량 늘리기">+</button></div></article>').join('')+'</div><button class="wide" id="rentNow" data-go="start" disabled>대여 시작</button>')}
+function items(){return state.active.items.map((q,i)=>q?'<div class="line"><div class="row">'+photo(i,true)+gear[i]+'</div><b>'+q+'개</b></div>':'').join('')}
+function returning(){if(!state.active){view(back('home')+'<h1>장비 반납</h1><p>현재 대여 중인 장비가 없습니다.</p><button data-go="rent">장비 대여</button>');return}view(back('home')+'<h1>장비 반납</h1>'+items()+'<h2>반납 사진</h2><p>사진을 선택하면 수업용 판독 결과가 무작위로 표시됩니다.</p><input type="file" id="file" accept="image/*" hidden style="display:none"><div class="row"><button data-go="pick">사진 업로드</button><button class="secondary" data-go="deletePhoto" '+(photoUrl?'':'disabled')+'>사진 삭제</button></div>'+(photoUrl?'<img class="preview" src="'+photoUrl+'" alt="선택한 반납 사진">':'')+(result?'<p role="status" class="notice"><b>'+result+'</b> · 다른 사진을 올리거나 같은 사진으로 다시 시도할 수 있습니다.</p>':''))}
+function totals(){const a=state.active;const minutes=Math.ceil(Math.max(0,a.end-a.start)/60000);const equipment=a.items.reduce((s,q)=>s+q,0)*10000;return {minutes,equipment,total:Math.round(equipment+minutes*10000/60)}}
+function balance(){return Math.min(Math.floor(state.points/10),Math.floor(totals().total/1000))*10}
+function paid(){return totals().total-used*100}
+function summary(){const t=totals();view(back('returning','반납 화면')+'<h1>이용 결과</h1><p class="notice">사진 판독 결과 · 전체 일치</p>'+items()+'<p>총 이용시간 <b>'+t.minutes+'분</b><br>장비 요금 '+won(t.equipment)+' · 시간 요금 '+won(t.total-t.equipment)+'<br>총 금액 <b>'+won(t.total)+'</b></p><p>누적 포인트 <b>'+state.points+'점</b> · 결제 후 적립 <b>10점</b></p><form id="discount"><label>사용할 포인트 (10점당 1,000원 할인)<input name="points" type="number" min="0" max="'+balance()+'" step="10" value="'+used+'" required></label><p>최종 결제 금액 <b id="paid">'+won(paid())+'</b></p><button class="wide">결제</button></form>')}
+function payment(){view(back('summary')+'<h1>데모 결제</h1><p>결제 금액 <b>'+won(paid())+'</b> · 카드 정보는 예시 값으로 입력하세요.</p><div class="row"><button data-go="transfer" aria-pressed="'+(method==='transfer')+'">계좌이체</button><button data-go="card" aria-pressed="'+(method==='card')+'">신용카드</button></div>'+(method?'<form id="payment"><p></p>'+(method==='transfer'?'<p class="notice">서경은행 <b>123-456-7890</b></p>':field('카드번호','card','text','inputmode="numeric" pattern="[0-9 ]{13,23}" placeholder="1111 2222 3333 4444"')+field('이름','name','text','placeholder="홍길동"')+field('CVC 번호','cvc','password','inputmode="numeric" pattern="[0-9]{3,4}" placeholder="123"'))+'<button class="wide">결제</button></form>':''))}
+const pages={login,signup,profile,exitMember,findId:()=>find('아이디 찾기'),findPw:()=>find('비번 찾기'),home,rent,returning,summary,transfer:()=>{method='transfer';payment()},card:()=>{method='card';payment()},pick:()=>document.querySelector('#file').click(),deletePhoto:()=>{cleanPhoto();returning()},start:async()=>{if(counts.some(Boolean)&&!state.active&&await save({...state,active:{items:[...counts],start:Date.now()}}))home()}};
+app.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||busy)return;if(b.dataset.go){pages[b.dataset.go]();return}if(b.dataset.step){const i=Number(b.dataset.i);counts[i]=Math.max(0,counts[i]+Number(b.dataset.step));document.querySelector('#q'+i).textContent=counts[i];document.querySelector('#rentNow').disabled=!counts.some(Boolean)}});
+app.addEventListener('input',e=>{if(e.target.name==='points'){const n=e.target.validity.valid?Number(e.target.value):0;document.querySelector('#paid').textContent=won(totals().total-n*100)}});
+app.addEventListener('change',async e=>{if(busy||e.target.id!=='file'||!e.target.files.length)return;const file=e.target.files[0];if(!file.type.startsWith('image/')){alert('이미지 파일을 선택해 주세요.');e.target.value='';return}cleanPhoto();photoUrl=URL.createObjectURL(file);result=['전체 일치','장비 누락','판독 어려움'][Math.floor(Math.random()*3)];if(result==='전체 일치'&&await save({...state,active:{...state.active,end:Date.now()}})){used=0;summary();return}if(result==='전체 일치')result='저장 실패';returning()});
+app.addEventListener('submit',async e=>{e.preventDefault();if(busy)return;const form=e.target;if(form.id==='login'||form.id==='signup'){await openMember(form);return}if(form.id==='profile'){await updatePhone(form);return}if(form.id==='discount'){used=Number(form.elements.points.value);method='';payment();return}if(form.id==='payment'&&!busy&&state.active&&method){const record={...state.active,...totals(),used,paid:paid(),method};if(!await save({...state,active:null,points:state.points-used+10,history:[...state.history,record]}))return;busy=true;cleanPhoto();view('<h1 role="status">결제되었습니다.</h1><p>2초 후 장비 대여·반납 화면으로 이동합니다.</p>');setTimeout(()=>{busy=false;home()},2000)}});
+login();
+</script></html>
